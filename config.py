@@ -28,3 +28,8 @@ TEMP_VIDEOS_DIR = "temp_videos"
 FFMPEG_PATH = r"C:\Program Files\ImageMagick-7.0.10-Q16-HDRI\ffmpeg.exe"  # Полный путь к ffmpeg
 FFPROBE_PATH = None  # ffprobe не найден, будет использован ffmpeg для получения длительности
 
+# Режим обработки видео для кружочков
+# "crop" - обрезать до квадрата (без черных полей)
+# "pad" - добавить черные поля (старый режим)
+VIDEO_CROP_MODE = "crop"  # По умолчанию обрезка
+

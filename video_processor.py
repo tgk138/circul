@@ -17,6 +17,27 @@ TEMP_DIR = Path(config.TEMP_VIDEOS_DIR)
 TEMP_DIR.mkdir(exist_ok=True)
 
 
+def get_video_filter(size: int, mode: str = "crop") -> str:
+    """
+    Генерирует фильтр FFmpeg для преобразования видео в квадрат.
+    
+    Args:
+        size: Размер квадрата (например, 640)
+        mode: Режим обработки - "crop" (обрезать) или "pad" (добавить поля)
+        
+    Returns:
+        Строка с фильтром FFmpeg
+    """
+    if mode == "crop":
+        # Обрезаем до квадрата (без черных полей)
+        return f'scale={size}:{size}:force_original_aspect_ratio=increase,' \
+               f'crop={size}:{size}:(iw-{size})/2:(ih-{size})/2'
+    else:
+        # Добавляем черные поля (старый режим)
+        return f'scale={size}:{size}:force_original_aspect_ratio=decrease,' \
+               f'pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=black'
+
+
 def get_ffmpeg_command(command: str) -> str:
     """
     Возвращает команду для запуска FFmpeg/ffprobe с учётом настроек из config.
@@ -81,7 +102,7 @@ def check_ffmpeg_available() -> bool:
                 f"FFmpeg и ffprobe доступны (ffmpeg: {ffmpeg_cmd}, ffprobe: {ffprobe_cmd})"
             )
     except FileNotFoundError:
-        logger.warning("ffprobe не найден, для длительности будет использован ffmpeg")
+        logger.debug("ffprobe не найден, для длительности будет использован ffmpeg")
     except Exception as e:
         logger.warning(f"Ошибка при проверке ffprobe: {e}")
 
@@ -165,7 +186,8 @@ async def get_video_duration(video_path: str) -> float:
                 return float(duration_str)
     except FileNotFoundError:
         # Если ffprobe не найден, пробуем использовать ffmpeg
-        logger.warning("ffprobe не найден, используем ffmpeg для получения длительности")
+        # Используем DEBUG вместо WARNING, так как это не критично
+        logger.debug("ffprobe не найден, используем ffmpeg для получения длительности")
         pass
     except Exception:
         # Если ошибка, пробуем ffmpeg
@@ -227,8 +249,7 @@ async def optimize_video_size(video_path: str, max_size: int = config.MAX_FILE_S
         ffmpeg_cmd = get_ffmpeg_command('ffmpeg')
         cmd = [
             ffmpeg_cmd, '-i', video_path,
-            '-vf', f'scale={size}:{size}:force_original_aspect_ratio=decrease,'
-                   f'pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=black',
+            '-vf', get_video_filter(size, config.VIDEO_CROP_MODE),
             '-c:v', config.FFMPEG_VIDEO_CODEC,
             '-preset', config.FFMPEG_PRESET,
             '-crf', '28',  # Увеличиваем CRF для меньшего размера
@@ -309,8 +330,7 @@ async def cut_video_to_circles(video_path: str, segment_duration: int = config.D
             ffmpeg_cmd, '-i', video_path,
             '-ss', str(start_time),
             '-t', str(actual_duration),
-            '-vf', f'scale={size}:{size}:force_original_aspect_ratio=decrease,'
-                   f'pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:color=black',
+            '-vf', get_video_filter(size, config.VIDEO_CROP_MODE),
             '-c:v', config.FFMPEG_VIDEO_CODEC,
             '-preset', config.FFMPEG_PRESET,
             '-crf', str(config.FFMPEG_CRF),

@@ -24,6 +24,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_message_type(message) -> str:
+    """
+    Определяет тип сообщения через проверку атрибутов.
+    
+    Args:
+        message: Объект Message из telegram
+        
+    Returns:
+        Строка с типом сообщения: 'text', 'video', 'video_note', 'document', 'photo', 'unknown'
+    """
+    if not message:
+        return "unknown"
+    
+    if message.text:
+        return "text"
+    elif message.video:
+        return "video"
+    elif message.video_note:
+        return "video_note"
+    elif message.document:
+        return "document"
+    elif message.photo:
+        return "photo"
+    else:
+        return "unknown"
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
     await update.message.reply_text(
@@ -39,20 +66,66 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик видео файлов, отправленных напрямую в бот"""
     chat_id = update.message.chat_id
-    logger.info(f"Получен видео файл от пользователя {chat_id}, тип контента: {update.message.content_type}")
+    message_type = get_message_type(update.message)
+    logger.info(f"Получен видео файл от пользователя {chat_id}, тип контента: {message_type}")
     
     # Проверяем разные типы видео
     video = update.message.video or update.message.video_note
     document = update.message.document
     
     # Если это документ, проверяем, что это видео
-    if document and document.mime_type and document.mime_type.startswith('video/'):
-        video = document
-        logger.info(f"Видео получено как документ: {document.file_name}, размер: {document.file_size}")
-    elif not video:
-        logger.warning(f"Не удалось получить видео из сообщения. Тип: {update.message.content_type}")
+    if document:
+        logger.info(f"Получен документ: имя={document.file_name}, размер={document.file_size}, MIME={document.mime_type}")
+        if document.mime_type and document.mime_type.startswith('video/'):
+            video = document
+            logger.info(f"Видео получено как документ: {document.file_name}, размер: {document.file_size}, MIME: {document.mime_type}")
+        else:
+            # Это документ, но не видео - проверяем расширение файла
+            if document.file_name:
+                file_name_lower = document.file_name.lower()
+                video_extensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v']
+                if any(file_name_lower.endswith(ext) for ext in video_extensions):
+                    # Расширение похоже на видео, обрабатываем
+                    logger.info(f"Документ с видео-расширением: {document.file_name}, обрабатываем как видео")
+                    video = document
+                else:
+                    logger.info(f"Получен документ, но это не видео. MIME-тип: {document.mime_type}, файл: {document.file_name}")
+                    await update.message.reply_text(
+                        "❌ Это не видео файл. Отправь видео файл или ссылку на видео."
+                    )
+                    return
+            else:
+                logger.warning(f"Документ без имени файла и без MIME-типа видео. MIME: {document.mime_type}")
+                await update.message.reply_text(
+                    "❌ Не удалось определить тип файла. Отправь видео файл или ссылку на видео."
+                )
+                return
+    
+    if not video:
+        message_type = get_message_type(update.message)
+        logger.warning(f"Не удалось получить видео из сообщения. Тип: {message_type}")
         await update.message.reply_text("❌ Не удалось получить видео из сообщения.")
         return
+    
+    # Проверяем размер файла перед скачиванием
+    MAX_TELEGRAM_FILE_SIZE = 20 * 1024 * 1024  # 20 МБ - лимит Telegram Bot API
+    file_size = None
+    
+    if hasattr(video, 'file_size') and video.file_size:
+        file_size = video.file_size
+        file_size_mb = file_size / (1024 * 1024)
+        logger.info(f"Размер файла: {file_size_mb:.2f} МБ ({file_size} байт)")
+        
+        if file_size > MAX_TELEGRAM_FILE_SIZE:
+            await update.message.reply_text(
+                f"❌ Файл слишком большой ({file_size_mb:.1f} МБ).\n\n"
+                f"Telegram Bot API позволяет скачивать файлы до 20 МБ.\n\n"
+                f"Что делать?\n"
+                f"• Отправь ссылку на видео (YouTube, Rutube, и т.д.)\n"
+                f"• Или сожми видео перед отправкой\n"
+                f"• Или загрузи видео в облако и отправь ссылку"
+            )
+            return
     
     # Отправляем сообщение о начале обработки
     status_message = await update.message.reply_text("⏳ Скачиваю и обрабатываю видео...")
@@ -71,6 +144,20 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 file_ext = '.webm'
             elif 'quicktime' in video.mime_type or 'mov' in video.mime_type:
                 file_ext = '.mov'
+        
+        # Если это документ, пробуем определить расширение по имени файла
+        if hasattr(video, 'file_name') and video.file_name:
+            file_name_lower = video.file_name.lower()
+            if file_name_lower.endswith('.webm'):
+                file_ext = '.webm'
+            elif file_name_lower.endswith('.mov'):
+                file_ext = '.mov'
+            elif file_name_lower.endswith('.avi'):
+                file_ext = '.avi'
+            elif file_name_lower.endswith('.mkv'):
+                file_ext = '.mkv'
+            elif file_name_lower.endswith('.mp4'):
+                file_ext = '.mp4'
         
         temp_video_path = Path(config.TEMP_VIDEOS_DIR) / f"telegram_video_{chat_id}_{video.file_id}{file_ext}"
         temp_video_path.parent.mkdir(exist_ok=True)
@@ -120,7 +207,17 @@ async def handle_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.error(f"Ошибка обработки видео для пользователя {chat_id}: {error_msg}")
         
         # Пытаемся дать более понятное сообщение об ошибке
-        if "FFmpeg" in error_msg or "ffprobe" in error_msg:
+        if "too big" in error_msg.lower() or "file is too big" in error_msg.lower() or "file_size" in error_msg.lower():
+            file_size_mb = file_size / (1024 * 1024) if file_size else "?"
+            user_error = (
+                f"❌ Файл слишком большой ({file_size_mb:.1f} МБ, если известно).\n\n"
+                f"Telegram Bot API позволяет скачивать файлы до 20 МБ.\n\n"
+                f"Что делать?\n"
+                f"• Отправь ссылку на видео (YouTube, Rutube, и т.д.)\n"
+                f"• Или сожми видео перед отправкой\n"
+                f"• Или загрузи видео в облако и отправь ссылку"
+            )
+        elif "FFmpeg" in error_msg or "ffprobe" in error_msg:
             user_error = "❌ Ошибка обработки видео. Убедитесь, что FFmpeg установлен и доступен."
         elif "yt-dlp" in error_msg.lower() or "download" in error_msg.lower():
             user_error = "❌ Не удалось скачать видео. Проверь ссылку или попробуй другую платформу."
@@ -211,7 +308,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Ошибка обработки видео для пользователя {chat_id}: {error_msg}")
         
         # Пытаемся дать более понятное сообщение об ошибке
-        if "FFmpeg" in error_msg or "ffprobe" in error_msg:
+        if "too big" in error_msg.lower() or "file is too big" in error_msg.lower():
+            user_error = (
+                f"❌ Файл слишком большой.\n\n"
+                f"Telegram Bot API позволяет скачивать файлы до 20 МБ.\n\n"
+                f"Что делать?\n"
+                f"• Отправь ссылку на видео (YouTube, Rutube, и т.д.)\n"
+                f"• Или сожми видео перед отправкой\n"
+                f"• Или загрузи видео в облако и отправь ссылку"
+            )
+        elif "FFmpeg" in error_msg or "ffprobe" in error_msg:
             user_error = "❌ Ошибка обработки видео. Убедитесь, что FFmpeg установлен и доступен."
         elif "yt-dlp" in error_msg.lower() or "download" in error_msg.lower():
             user_error = "❌ Не удалось скачать видео. Проверь ссылку или попробуй другую платформу."
@@ -252,11 +358,14 @@ def main() -> None:
     # Регистрируем обработчики
     # Важно: обработчик видео должен быть ПЕРЕД текстовыми сообщениями
     app.add_handler(CommandHandler("start", start))
-    # Обрабатываем видео, video_note и документы с видео
-    # Используем фильтр для документов с MIME типом video
-    video_document_filter = filters.Document.MimeType("video/")
+    # Обрабатываем видео и video_note
     app.add_handler(MessageHandler(
-        filters.VIDEO | filters.VIDEO_NOTE | video_document_filter, 
+        filters.VIDEO | filters.VIDEO_NOTE, 
+        handle_video_file
+    ))
+    # Обрабатываем все документы (проверка MIME-типа внутри функции)
+    app.add_handler(MessageHandler(
+        filters.Document.ALL,
         handle_video_file
     ))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -264,11 +373,27 @@ def main() -> None:
     # Добавляем логирование всех входящих сообщений для отладки
     async def log_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message:
-            logger.info(f"Входящее сообщение: тип={update.message.content_type}, chat_id={update.message.chat_id}, "
+            message_type = get_message_type(update.message)
+            logger.info(f"Входящее сообщение: тип={message_type}, chat_id={update.message.chat_id}, "
                        f"has_text={bool(update.message.text)}, has_video={bool(update.message.video)}, "
                        f"has_document={bool(update.message.document)}")
     
     app.add_handler(MessageHandler(filters.ALL, log_all_messages), group=1)
+    
+    # Добавляем обработчик ошибок
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик ошибок"""
+        logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+        
+        if update and update.message:
+            try:
+                await update.message.reply_text(
+                    "❌ Произошла ошибка при обработке запроса. Попробуйте позже."
+                )
+            except:
+                pass
+    
+    app.add_error_handler(error_handler)
     
     
     logger.info("Бот запущен и готов к работе!")
